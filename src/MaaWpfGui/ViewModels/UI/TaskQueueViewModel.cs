@@ -2243,17 +2243,30 @@ public class TaskQueueViewModel : Screen
         ResetTaskSelection();
     }
 
-    internal async Task<bool> ConnectToConnectionTarget()
+    /// <summary>
+    /// Connects to the configured emulator or PC client, starting it when the settings allow.
+    /// </summary>
+    /// <param name="startUpLaunchesClient">Whether an enabled StartUp task in this run is going to launch the game client.</param>
+    /// <returns>Whether the connection succeeded.</returns>
+    internal async Task<bool> ConnectToConnectionTarget(bool startUpLaunchesClient = false)
     {
         string errMsg = string.Empty;
         bool windowNotFound = false;
         bool connected = await Task.Run(() => Instances.AsstProxy.AsstConnect(ref errMsg, out windowNotFound));
 
+        // PC 端需先绑定窗口才能执行任务，开始唤醒勾选启动客户端时与模拟器一致：客户端未运行就先启动它
+        bool launchPcClient = SettingsViewModel.ConnectSettings.RetryPcClientOnDisconnected
+            || (startUpLaunchesClient && SettingsViewModel.GameSettings.StartGame);
         if (!connected
             && SettingsViewModel.ConnectSettings.IsPCConnectConfig
             && windowNotFound
-            && SettingsViewModel.ConnectSettings.RetryPcClientOnDisconnected)
+            && launchPcClient)
         {
+            if (string.IsNullOrEmpty(SettingsViewModel.StartSettings.PcClientPath))
+            {
+                AddLog(LocalizationHelper.GetString("Settings.Startup.PcClientPathEmptyError"), UiLogColor.Warning);
+            }
+
             AddLog(LocalizationHelper.GetString("Connection.ConnectFailed") + "\n" + LocalizationHelper.GetString("Connection.TryToStartPcClient"));
 
             await Task.Run(() => SettingsViewModel.StartSettings.TryToStartPcClient());
@@ -2533,7 +2546,11 @@ public class TaskQueueViewModel : Screen
             return;
         }
 
-        if (!await ConnectToConnectionTarget())
+        bool startUpLaunchesClient = tasks.Any(t =>
+            t is StartUpTask
+            && IsTaskEnable(t)
+            && (startIndex is not int firstIndex || ConfigFactory.CurrentConfig.TaskQueue.IndexOf(t) >= firstIndex));
+        if (!await ConnectToConnectionTarget(startUpLaunchesClient))
         {
             return;
         }

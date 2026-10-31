@@ -362,6 +362,7 @@
     <system:String x:Key="Asst.Connection.AttachWindow.Found">找到視窗 "{0}"</system:String>
     <system:String x:Key="Asst.Connection.AttachWindow.MultipleFound">找到 {0} 個 "{1}" 視窗，將使用第一個</system:String>
     <system:String x:Key="Asst.Connection.AttachWindow.NotFound">未找到視窗 "{0}"，請確保遊戲已啟動</system:String>
+    <system:String x:Key="Asst.Connection.AttachWindow.Reattached">已重新綁定遊戲視窗</system:String>
     <system:String x:Key="Asst.Connection.CurrentResolution">目前解析度：{0}x{1}</system:String>
     <system:String x:Key="Asst.Connection.EmulatorFps.ErrorTip">偵測到模擬器設定影格率過低（{0} FPS），可能導致任務異常，請關閉模擬器背景降幀並將影格率設定為 60 FPS</system:String>
     <system:String x:Key="Asst.Connection.EmulatorFps.HighTip">偵測到模擬器設定影格率為 {0} FPS，高於遊戲原生影格率上限（60 FPS），可能是模擬器插幀功能，可能導致畫面異常或辨識不穩定，建議關閉插幀並將影格率設定為 60 FPS</system:String>

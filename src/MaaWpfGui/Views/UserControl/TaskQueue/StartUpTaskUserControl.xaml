@@ -65,11 +65,8 @@
             TextWrapping="Wrap" />
         <CheckBox
             Margin="0,5"
-            d:Visibility="Visible"
             Content="{DynamicResource Connection.LaunchClient}"
-            IsChecked="{Binding StartGame, Source={x:Static settings_vms:GameSettingsUserControlModel.Instance}}"
-            Visibility="{c:Binding 'ConnectConfig != enums:ConnectConfig.PC',
-                                   Source={x:Static settings_vms:ConnectSettingsUserControlModel.Instance}}" />
+            IsChecked="{Binding StartGame, Source={x:Static settings_vms:GameSettingsUserControlModel.Instance}}" />
         <hc:ComboBox
             Margin="0,5"
             hc:InfoElement.Title="{DynamicResource Settings.Game.ClientType}"

@@ -362,6 +362,7 @@
     <system:String x:Key="Asst.Connection.AttachWindow.Found">Found window "{0}"</system:String>
     <system:String x:Key="Asst.Connection.AttachWindow.MultipleFound">Found {0} "{1}" windows, using the first one</system:String>
     <system:String x:Key="Asst.Connection.AttachWindow.NotFound">Window "{0}" not found, please ensure the game is running</system:String>
+    <system:String x:Key="Asst.Connection.AttachWindow.Reattached">Re-attached to the game window</system:String>
     <system:String x:Key="Asst.Connection.CurrentResolution">Current resolution: {0}x{1}</system:String>
     <system:String x:Key="Asst.Connection.EmulatorFps.ErrorTip">Emulator refresh rate is set too low ({0} FPS), which may cause tasks to malfunction. Please turn off background frame rate reduction and set the frame rate to 60 FPS</system:String>
     <system:String x:Key="Asst.Connection.EmulatorFps.HighTip">Emulator refresh rate is set to {0} FPS, above the game's native frame rate cap (60 FPS). This may be the emulator's frame interpolation feature, which can cause visual artifacts or unstable recognition. It is recommended to disable frame interpolation and set the frame rate to 60 FPS</system:String>

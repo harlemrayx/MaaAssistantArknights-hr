@@ -3,7 +3,9 @@
 #ifdef _WIN32
 
 #include <deque>
+#include <filesystem>
 #include <memory>
+#include <mutex>
 #include <string>
 
 #include "MaaUtils/SafeWindows.hpp"
@@ -78,9 +80,30 @@ private:
     // 记录窗口当前位置，任务结束时恢复
     void save_window_position();
 
+    // 游戏重启后窗口句柄会变化，以下用于重新找到并绑定游戏窗口
+    // 记录当前窗口的标题、窗口类与所属进程路径
+    void record_window_identity();
+    // 窗口类与所属程序（取不到程序路径时比较标题）均与记录一致才算游戏窗口
+    bool is_game_window(HWND hwnd) const;
+    bool is_attached_window_alive() const;
+    // 按记录的窗口特征查找游戏窗口，preferred_pid 非 0 时优先返回该进程的窗口
+    HWND find_game_window(DWORD preferred_pid) const;
+    // 启动游戏进程，成功时返回进程 id（经 UAC 启动时可能取不到，为 0）
+    bool launch_game_process(DWORD& pid) const;
+    // 等待新窗口出现且客户区尺寸稳定
+    HWND wait_for_game_window(DWORD pid);
+    // 沿用当前截图/输入方式绑定到新窗口，并通知界面窗口句柄已变化
+    bool reattach_window(HWND hwnd, const std::string& why);
+    // 截图失败且原窗口已失效时，尝试找回游戏窗口；找不到则报告断开
+    bool recover_lost_window();
+
+    // 创建并连接控制单元，成功后替换当前单元
+    bool create_unit(void* hwnd);
+    // 取当前控制单元的引用，重新绑定窗口时旧单元会在进行中的调用结束后再销毁
+    std::shared_ptr<MaaFwControlUnitAPI> acquire_unit() const;
+
     // 封装 MaaWin32ControlUnit 的调用
     bool prepare_window_for_input();
-    bool unit_connect();
     bool unit_screencap(cv::Mat& image);
     bool unit_click(int x, int y);
     bool unit_swipe(int x1, int y1, int x2, int y2, int duration);
@@ -95,8 +118,15 @@ private:
 private:
     AsstCallback m_callback = nullptr;
     std::unique_ptr<Win32ControlUnitLoader> m_loader;
-    void* m_unit_handle = nullptr;
+    mutable std::mutex m_unit_mutex;
+    std::shared_ptr<MaaFwControlUnitAPI> m_unit;
     void* m_hwnd = nullptr;
+
+    std::wstring m_window_title;
+    std::wstring m_window_class;
+    std::filesystem::path m_game_exe_path;
+    // 最近一次由 start_game 启动的游戏进程
+    DWORD m_launched_pid = 0;
 
     bool m_inited = false;
     std::string m_uuid;

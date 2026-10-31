@@ -111,6 +111,7 @@ void asst::Controller::clear_info() noexcept
     m_scale_size = { WindowWidthDefault, WindowHeightDefault };
     m_controller = nullptr;
     m_scale_proxy = nullptr;
+    m_scale_proxy_res = { 0, 0 };
     std::unique_lock<std::shared_mutex> image_lock(m_image_mutex);
     m_cache_image.release();
     m_preview_image.release();
@@ -165,7 +166,14 @@ cv::Mat asst::Controller::get_resized_image_cache(bool for_preview) const
 bool asst::Controller::start_game(const std::string& client_type)
 {
     CHECK_EXIST(m_controller, false);
-    return m_controller->start_game(client_type);
+    if (!m_controller->start_game(client_type)) {
+        return false;
+    }
+#ifdef _WIN32
+    return sync_win32_scale_proxy();
+#else
+    return true;
+#endif
 }
 
 bool asst::Controller::stop_game(const std::string& client_type)
@@ -389,6 +397,7 @@ bool asst::Controller::attach_window(
     }
 
     m_scale_size = m_scale_proxy->get_scale_size();
+    m_scale_proxy_res = m_controller->get_screen_res();
 
     return true;
 }
@@ -398,6 +407,38 @@ void asst::Controller::restore_window_position()
     if (auto* win32_controller = dynamic_cast<Win32Controller*>(m_controller.get()); win32_controller != nullptr) {
         win32_controller->restore_window_position();
     }
+}
+
+bool asst::Controller::sync_win32_scale_proxy()
+{
+    if (m_controller_type != ControllerType::Win32 || !m_controller) {
+        return true;
+    }
+
+    const auto res = m_controller->get_screen_res();
+    if (res == m_scale_proxy_res) {
+        return true;
+    }
+
+    LogInfo << __FUNCTION__ << "| window size changed from" << m_scale_proxy_res.first << "x"
+            << m_scale_proxy_res.second << "to" << res.first << "x" << res.second;
+
+    auto proxy_callback = [&](const json::object& details) {
+        json::value info = json::object { { "uuid", m_uuid } } | details;
+        callback(AsstMsg::ConnectionInfo, info);
+    };
+
+    try {
+        m_scale_proxy = std::make_shared<ControlScaleProxy>(m_controller, m_controller_type, proxy_callback);
+    }
+    catch (const std::exception& e) {
+        LogError << __FUNCTION__ << "| Cannot create controller proxy:" << e.what();
+        return false;
+    }
+
+    m_scale_size = m_scale_proxy->get_scale_size();
+    m_scale_proxy_res = res;
+    return true;
 }
 #endif
 
@@ -534,12 +575,20 @@ cv::Mat asst::Controller::get_preview_image_cache() const
 bool asst::Controller::screencap(bool allow_reconnect)
 {
     CHECK_EXIST(m_controller, false);
-    std::unique_lock<std::shared_mutex> image_lock(m_image_mutex);
-    if (!m_controller->screencap(m_cache_image, allow_reconnect)) {
-        return false;
+    {
+        std::unique_lock<std::shared_mutex> image_lock(m_image_mutex);
+        if (!m_controller->screencap(m_cache_image, allow_reconnect)) {
+            return false;
+        }
+        // 任务帧更新后，外部预览也应读取最新的画面。
+        m_preview_image.release();
     }
-    // 任务帧更新后，外部预览也应读取最新的画面。
-    m_preview_image.release();
+#ifdef _WIN32
+    // 允许重连时 PC 端可能已重新绑定到新窗口
+    if (allow_reconnect) {
+        return sync_win32_scale_proxy();
+    }
+#endif
     return true;
 }
 

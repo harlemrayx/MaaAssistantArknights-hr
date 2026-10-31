@@ -362,6 +362,7 @@
     <system:String x:Key="Asst.Connection.AttachWindow.Found">ウィンドウ "{0}" が見つかりました</system:String>
     <system:String x:Key="Asst.Connection.AttachWindow.MultipleFound">{0} 個の "{1}" ウィンドウが見つかりました。最初のものを使用します</system:String>
     <system:String x:Key="Asst.Connection.AttachWindow.NotFound">ウィンドウ "{0}" が見つかりません。ゲームが起動していることを確認してください</system:String>
+    <system:String x:Key="Asst.Connection.AttachWindow.Reattached">ゲームウィンドウに再接続しました</system:String>
     <system:String x:Key="Asst.Connection.CurrentResolution">現在の解像度: {0}x{1}</system:String>
     <system:String x:Key="Asst.Connection.EmulatorFps.ErrorTip">エミュレータの設定フレームレートが低すぎます（{0} FPS）。タスクが異常になる可能性があります。エミュレータの設定でバックグラウンドのフレームレート低下をオフにし、フレームレートを 60 FPS に設定してください</system:String>
     <system:String x:Key="Asst.Connection.EmulatorFps.HighTip">エミュレータの設定フレームレートが {0} FPS で、ゲームのネイティブフレームレート上限（60 FPS）を上回っています。これはエミュレータのフレーム補間機能の可能性があり、画面の異常や認識の不安定化を招くことがあります。フレーム補間を無効にし、フレームレートを 60 FPS に設定することを推奨します</system:String>

@@ -57,6 +57,7 @@ using Serilog;
 using Stylet;
 using Windows.Win32;
 using Windows.Win32.Foundation;
+using Windows.Win32.System.Threading;
 using Windows.Win32.UI.WindowsAndMessaging;
 using static MaaWpfGui.Extensions.LocalizationKeyExtensions;
 using static MaaWpfGui.Helper.Instances.Data;
@@ -1097,6 +1098,27 @@ public class AsstProxy
 
             case "Reconnected":
                 Instances.TaskQueueViewModel.AddLog(LocalizationHelper.GetString("Asst.Connection.ReconnectSuccess"));
+                break;
+
+            case "WindowReattached":
+                {
+                    // PC 端游戏重启后 Core 已绑定到新窗口，同步句柄供静音、最小化、窗口还原使用
+                    var hwnd = new IntPtr(details["details"]?["hwnd"]?.ToObject<long>() ?? 0);
+                    if (hwnd == IntPtr.Zero)
+                    {
+                        break;
+                    }
+
+                    _attachWindowHwnd = hwnd;
+                    _logger.Information("Core reattached to game window {Hwnd}, why: {Why}", hwnd, details["why"]?.ToString());
+                    if (SettingsViewModel.ConnectSettings.ExtraConfig is Win32Extra { MuteWhileRunning: true } && !_runningState.GetIdle())
+                    {
+                        GameAudioMuteManager.Start(hwnd, () => !_runningState.GetIdle());
+                    }
+
+                    Instances.TaskQueueViewModel.AddLog(LocalizationHelper.GetString("Asst.Connection.AttachWindow.Reattached"));
+                }
+
                 break;
 
             case "Disconnect":
@@ -3459,8 +3481,55 @@ public class AsstProxy
 
             Instances.TaskQueueViewModel.AddLog(error, UiLogColor.Error);
         }
+        else
+        {
+            RememberPcClientPath(hwnd);
+        }
 
         return ret;
+    }
+
+    /// <summary>
+    /// 未设置 PC 客户端路径时，记录已绑定窗口所属的游戏程序，供找不到窗口时启动客户端使用。
+    /// </summary>
+    /// <param name="hwnd">已绑定的游戏窗口句柄。</param>
+    private static void RememberPcClientPath(IntPtr hwnd)
+    {
+        if (!string.IsNullOrEmpty(SettingsViewModel.StartSettings.PcClientPath))
+        {
+            return;
+        }
+
+        _ = PInvoke.GetWindowThreadProcessId((HWND)hwnd, out var processId);
+        if (processId == 0)
+        {
+            return;
+        }
+
+        // 反作弊可能拒绝读取进程内存（MainModule 依赖），只申请查询映像路径所需的最小权限
+        using var process = PInvoke.OpenProcess_SafeHandle(PROCESS_ACCESS_RIGHTS.PROCESS_QUERY_LIMITED_INFORMATION, false, processId);
+        if (process.IsInvalid)
+        {
+            _logger.Warning("Failed to open PC client process {ProcessId}, error: {Error}", processId, Marshal.GetLastWin32Error());
+            return;
+        }
+
+        Span<char> buffer = stackalloc char[1024];
+        uint size = (uint)buffer.Length;
+        if (!PInvoke.QueryFullProcessImageName(process, PROCESS_NAME_FORMAT.PROCESS_NAME_WIN32, buffer, ref size))
+        {
+            _logger.Warning("Failed to query PC client path of process {ProcessId}, error: {Error}", processId, Marshal.GetLastWin32Error());
+            return;
+        }
+
+        var exePath = new string(buffer[..(int)size]);
+        if (!File.Exists(exePath))
+        {
+            return;
+        }
+
+        _logger.Information("Set PC client path from the attached window: {Path}", exePath);
+        Execute.OnUIThread(() => SettingsViewModel.StartSettings.PcClientPath = exePath);
     }
 
     /// <summary>

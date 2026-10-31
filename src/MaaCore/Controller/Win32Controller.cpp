@@ -5,13 +5,17 @@
 #include <algorithm>
 #include <chrono>
 #include <future>
+#include <iterator>
 #include <numeric>
 #include <sstream>
 #include <thread>
 
+#include <shellapi.h>
+
 #include "Config/GeneralConfig.h"
 #include "SwipeHelper.hpp"
 #include "Utils/Logger.hpp"
+#include "Utils/Platform.hpp"
 #include "Utils/WorkingDir.hpp"
 
 namespace asst
@@ -36,6 +40,39 @@ static const char* get_win32_screencap_method_name(Win32ScreencapMethod method)
     }
 }
 
+static std::filesystem::path query_process_image_path(DWORD pid)
+{
+    HANDLE process = pid != 0 ? OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid) : nullptr;
+    if (!process) {
+        return {};
+    }
+    std::wstring image_path(32'768, L'\0');
+    auto size = static_cast<DWORD>(image_path.size());
+    const bool ok = QueryFullProcessImageNameW(process, 0, image_path.data(), &size);
+    CloseHandle(process);
+    if (!ok) {
+        return {};
+    }
+    image_path.resize(size);
+    return image_path;
+}
+
+static bool is_same_path(const std::filesystem::path& lhs, const std::filesystem::path& rhs)
+{
+    return !lhs.empty() && !rhs.empty() && CompareStringOrdinal(lhs.c_str(), -1, rhs.c_str(), -1, TRUE) == CSTR_EQUAL;
+}
+
+static bool is_process_running(DWORD pid)
+{
+    HANDLE process = pid != 0 ? OpenProcess(SYNCHRONIZE, FALSE, pid) : nullptr;
+    if (!process) {
+        return false;
+    }
+    const bool running = WaitForSingleObject(process, 0) == WAIT_TIMEOUT;
+    CloseHandle(process);
+    return running;
+}
+
 Win32Controller::Win32Controller(const AsstCallback& callback, Assistant* inst) :
     InstHelper(inst),
     m_callback(callback),
@@ -50,10 +87,9 @@ Win32Controller::~Win32Controller()
 
     restore_window_position();
 
-    if (m_unit_handle && m_loader) {
-        m_loader->destroy(m_unit_handle);
-        m_unit_handle = nullptr;
-    }
+    // 删除器依赖 m_loader，须在其析构前释放
+    std::scoped_lock lock(m_unit_mutex);
+    m_unit.reset();
 }
 
 bool Win32Controller::attach(
@@ -66,18 +102,11 @@ bool Win32Controller::attach(
 
     restore_window_position();
     m_inited = false;
-    m_hwnd = hwnd;
     m_screencap_method = screencap_method;
     m_mouse_method = mouse_method;
     m_keyboard_method = keyboard_method;
     m_screencap_cost.clear();
     m_screencap_times = 0;
-
-    // 销毁旧的控制单元
-    if (m_unit_handle && m_loader) {
-        m_loader->destroy(m_unit_handle);
-        m_unit_handle = nullptr;
-    }
 
     // 加载 DLL
     if (!m_loader->loaded()) {
@@ -88,28 +117,18 @@ bool Win32Controller::attach(
         }
     }
 
-    // 创建控制单元
-    m_unit_handle = m_loader->create(hwnd, screencap_method, mouse_method, keyboard_method);
-    if (!m_unit_handle) {
-        Log.error("Failed to create Win32ControlUnit");
-        return false;
-    }
-
-    // 连接
-    if (!unit_connect()) {
-        Log.error("Failed to connect Win32ControlUnit");
-        m_loader->destroy(m_unit_handle);
-        m_unit_handle = nullptr;
+    if (!create_unit(hwnd)) {
         return false;
     }
 
     // 获取 UUID
-    auto* unit = static_cast<MaaFwControlUnitAPI*>(m_unit_handle);
-    if (!unit->request_uuid(m_uuid)) {
+    if (!acquire_unit()->request_uuid(m_uuid)) {
         std::stringstream ss;
         ss << hwnd;
         m_uuid = ss.str();
     }
+
+    record_window_identity();
 
     // 尝试截图获取屏幕分辨率
     cv::Mat image;
@@ -133,7 +152,7 @@ bool Win32Controller::connect(
 
 bool Win32Controller::inited() const noexcept
 {
-    return m_inited && m_unit_handle;
+    return m_inited && acquire_unit() != nullptr;
 }
 
 const std::string& Win32Controller::get_uuid() const
@@ -141,8 +160,15 @@ const std::string& Win32Controller::get_uuid() const
     return m_uuid;
 }
 
-bool Win32Controller::screencap(cv::Mat& image_payload, bool allow_reconnect [[maybe_unused]])
+bool Win32Controller::screencap(cv::Mat& image_payload, bool allow_reconnect)
 {
+    if (screencap_impl(image_payload, true)) {
+        return true;
+    }
+    // 游戏被关闭或重开后原窗口失效，截图必然失败；与 adb 重连对应，找回窗口后重试一次
+    if (!allow_reconnect || !m_inited || !recover_lost_window()) {
+        return false;
+    }
     return screencap_impl(image_payload, true);
 }
 
@@ -271,8 +297,36 @@ bool Win32Controller::screencap_impl(cv::Mat& image_payload, bool move_cursor)
 
 bool Win32Controller::start_game(const std::string& client_type [[maybe_unused]])
 {
-    Log.warn("start_game is not supported on Win32Controller");
-    return false;
+    LogTraceFunction;
+
+    // 与 adb 的 am start 语义一致：游戏已在运行时直接视为成功
+    if (is_attached_window_alive()) {
+        LogInfo << __FUNCTION__ << "| game window is alive, hwnd:" << m_hwnd;
+        return true;
+    }
+
+    // 窗口已失效，但游戏可能已经被其他途径重新打开，直接绑定即可
+    if (HWND hwnd = find_game_window(0)) {
+        return reattach_window(hwnd, "GameStarted");
+    }
+
+    // 上次启动的进程可能仍在初始化（等待窗口超时后重试），只继续等待，避免重复启动
+    DWORD pid = m_launched_pid;
+    if (is_process_running(pid) && is_same_path(query_process_image_path(pid), m_game_exe_path)) {
+        LogInfo << __FUNCTION__ << "| game process is still starting, pid:" << pid;
+    }
+    else if (launch_game_process(pid)) {
+        m_launched_pid = pid;
+    }
+    else {
+        return false;
+    }
+
+    HWND hwnd = wait_for_game_window(pid);
+    if (!hwnd) {
+        return false;
+    }
+    return reattach_window(hwnd, "GameStarted");
 }
 
 bool Win32Controller::stop_game(const std::string& client_type [[maybe_unused]])
@@ -285,7 +339,8 @@ bool Win32Controller::stop_game(const std::string& client_type [[maybe_unused]])
     }
 
     HWND hwnd = static_cast<HWND>(m_hwnd);
-    if (!IsWindow(hwnd)) {
+    // 句柄可能已被系统复用到其他程序的窗口，必须核对是游戏窗口，否则会误关其他程序
+    if (!is_attached_window_alive()) {
         Log.info("Invalid or stale window handle, game may already be closed, hwnd:", m_hwnd);
         return true;
     }
@@ -572,7 +627,7 @@ void Win32Controller::restore_window_position()
     }
 
     // 先结束窗口追踪，避免把窗口移动到错误位置
-    if (auto* unit = static_cast<MaaFwControlUnitAPI*>(m_unit_handle); unit != nullptr) {
+    if (auto unit = acquire_unit(); unit != nullptr) {
         unit->inactive();
     }
     if (IsWindow(hwnd)) {
@@ -614,13 +669,315 @@ void Win32Controller::callback(AsstMsg msg, const json::value& details)
     }
 }
 
-bool Win32Controller::unit_connect()
+bool Win32Controller::create_unit(void* hwnd)
 {
-    auto* unit = static_cast<MaaFwControlUnitAPI*>(m_unit_handle);
-    if (!unit) {
+    LogTraceFunction;
+
+    // 先放下旧单元；进行中的调用仍持有引用，结束后才真正销毁
+    {
+        std::scoped_lock lock(m_unit_mutex);
+        m_unit.reset();
+    }
+
+    void* handle = m_loader->create(hwnd, m_screencap_method, m_mouse_method, m_keyboard_method);
+    if (!handle) {
+        LogError << __FUNCTION__ << "| Failed to create Win32ControlUnit";
         return false;
     }
-    return unit->connect();
+
+    std::shared_ptr<MaaFwControlUnitAPI> unit(
+        static_cast<MaaFwControlUnitAPI*>(handle),
+        [loader = m_loader.get()](MaaFwControlUnitAPI* ptr) { loader->destroy(ptr); });
+    if (!unit->connect()) {
+        LogError << __FUNCTION__ << "| Failed to connect Win32ControlUnit";
+        return false;
+    }
+
+    std::scoped_lock lock(m_unit_mutex);
+    m_unit = std::move(unit);
+    m_hwnd = hwnd;
+    return true;
+}
+
+std::shared_ptr<MaaFwControlUnitAPI> Win32Controller::acquire_unit() const
+{
+    std::scoped_lock lock(m_unit_mutex);
+    return m_unit;
+}
+
+void Win32Controller::record_window_identity()
+{
+    LogTraceFunction;
+
+    HWND hwnd = static_cast<HWND>(m_hwnd);
+    if (!hwnd || !IsWindow(hwnd)) {
+        return;
+    }
+
+    wchar_t title[512] {};
+    if (GetWindowTextW(hwnd, title, static_cast<int>(std::size(title))) > 0) {
+        m_window_title = title;
+    }
+    wchar_t class_name[256] {};
+    if (GetClassNameW(hwnd, class_name, static_cast<int>(std::size(class_name))) > 0) {
+        m_window_class = class_name;
+    }
+
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (auto exe_path = query_process_image_path(pid); !exe_path.empty()) {
+        m_game_exe_path = std::move(exe_path);
+    }
+    else {
+        LogWarn << __FUNCTION__ << "| failed to query the game executable, pid:" << pid
+                << "last_error:" << GetLastError();
+    }
+
+    LogInfo << __FUNCTION__ << "| title:" << utils::from_osstring(m_window_title)
+            << "class:" << utils::from_osstring(m_window_class)
+            << "exe:" << utils::path_to_utf8_string(m_game_exe_path);
+}
+
+bool Win32Controller::is_game_window(HWND hwnd) const
+{
+    if (!hwnd || !IsWindow(hwnd) || m_window_class.empty()) {
+        return false;
+    }
+    wchar_t class_name[256] {};
+    if (GetClassNameW(hwnd, class_name, static_cast<int>(std::size(class_name))) <= 0 || m_window_class != class_name) {
+        return false;
+    }
+
+    // 优先按所属程序判断，标题因客户端语言而异；取不到程序路径时再退回比较标题
+    if (!m_game_exe_path.empty()) {
+        DWORD pid = 0;
+        GetWindowThreadProcessId(hwnd, &pid);
+        return is_same_path(query_process_image_path(pid), m_game_exe_path);
+    }
+    wchar_t title[512] {};
+    return GetWindowTextW(hwnd, title, static_cast<int>(std::size(title))) > 0 && m_window_title == title;
+}
+
+bool Win32Controller::is_attached_window_alive() const
+{
+    // 窗口句柄会被系统回收复用，仅 IsWindow 不足以说明游戏仍在运行
+    return is_game_window(static_cast<HWND>(m_hwnd));
+}
+
+HWND Win32Controller::find_game_window(DWORD preferred_pid) const
+{
+    if (m_window_class.empty() || (m_game_exe_path.empty() && m_window_title.empty())) {
+        return nullptr;
+    }
+
+    struct SearchContext
+    {
+        const Win32Controller* self = nullptr;
+        DWORD preferred_pid = 0;
+        HWND first = nullptr;
+        HWND preferred = nullptr;
+    } context { this, preferred_pid };
+
+    EnumWindows(
+        [](HWND hwnd, LPARAM lparam) -> BOOL {
+            auto& ctx = *reinterpret_cast<SearchContext*>(lparam);
+            if (!IsWindowVisible(hwnd) || !ctx.self->is_game_window(hwnd)) {
+                return TRUE;
+            }
+
+            DWORD pid = 0;
+            GetWindowThreadProcessId(hwnd, &pid);
+            if (ctx.preferred_pid != 0 && pid == ctx.preferred_pid) {
+                ctx.preferred = hwnd;
+                return FALSE;
+            }
+            if (!ctx.first) {
+                ctx.first = hwnd;
+            }
+            return TRUE;
+        },
+        reinterpret_cast<LPARAM>(&context));
+
+    return context.preferred ? context.preferred : context.first;
+}
+
+bool Win32Controller::launch_game_process(DWORD& pid) const
+{
+    LogTraceFunction;
+
+    pid = 0;
+    std::error_code ec;
+    if (m_game_exe_path.empty() || !std::filesystem::exists(m_game_exe_path, ec)) {
+        LogError << __FUNCTION__
+                 << "| game executable is unknown or missing:" << utils::path_to_utf8_string(m_game_exe_path);
+        return false;
+    }
+
+    const std::wstring exe = m_game_exe_path.native();
+    const std::wstring work_dir = m_game_exe_path.parent_path().native();
+    LogInfo << __FUNCTION__ << "| starting" << utils::path_to_utf8_string(m_game_exe_path);
+
+    // PC 端连接要求 MAA 以管理员身份运行，此时可直接创建进程；
+    // 游戏清单要求提权，若 MAA 未提权则 CreateProcess 失败，改走 UAC
+    std::wstring cmdline = L"\"" + exe + L"\"";
+    STARTUPINFOW startup_info {};
+    startup_info.cb = sizeof(startup_info);
+    PROCESS_INFORMATION process_info {};
+    if (CreateProcessW(
+            exe.c_str(),
+            cmdline.data(),
+            nullptr,
+            nullptr,
+            FALSE,
+            0,
+            nullptr,
+            work_dir.c_str(),
+            &startup_info,
+            &process_info)) {
+        pid = process_info.dwProcessId;
+        CloseHandle(process_info.hThread);
+        CloseHandle(process_info.hProcess);
+        LogInfo << __FUNCTION__ << "| game process started, pid:" << pid;
+        return true;
+    }
+
+    const DWORD error = GetLastError();
+    if (error != ERROR_ELEVATION_REQUIRED) {
+        LogError << __FUNCTION__ << "| CreateProcess failed, last_error:" << error;
+        return false;
+    }
+
+    LogInfo << __FUNCTION__ << "| elevation required, starting via UAC";
+    SHELLEXECUTEINFOW exec_info {};
+    exec_info.cbSize = sizeof(exec_info);
+    exec_info.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
+    exec_info.lpVerb = L"runas";
+    exec_info.lpFile = exe.c_str();
+    exec_info.lpDirectory = work_dir.c_str();
+    exec_info.nShow = SW_SHOWNORMAL;
+    if (!ShellExecuteExW(&exec_info)) {
+        LogError << __FUNCTION__ << "| ShellExecuteEx failed, last_error:" << GetLastError();
+        return false;
+    }
+    if (exec_info.hProcess) {
+        pid = GetProcessId(exec_info.hProcess);
+        CloseHandle(exec_info.hProcess);
+    }
+    LogInfo << __FUNCTION__ << "| game process started via UAC, pid:" << pid;
+    return true;
+}
+
+HWND Win32Controller::wait_for_game_window(DWORD pid)
+{
+    LogTraceFunction;
+
+    // 冷启动时反作弊与 SDK 初始化较慢，窗口出现前留足等待时间
+    static constexpr auto WindowWaitTimeout = std::chrono::seconds(180);
+    static constexpr unsigned PollIntervalMs = 1000;
+    // 窗口刚创建时可能还会调整尺寸，连续多次尺寸不变才视为就绪
+    static constexpr int StableTimesRequired = 2;
+
+    const auto deadline = std::chrono::steady_clock::now() + WindowWaitTimeout;
+    HWND candidate = nullptr;
+    std::pair<LONG, LONG> last_size { 0, 0 };
+    int stable_times = 0;
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (!sleep(PollIntervalMs)) {
+            LogInfo << __FUNCTION__ << "| interrupted";
+            return nullptr;
+        }
+
+        HWND hwnd = find_game_window(pid);
+        RECT rect {};
+        if (!hwnd || !GetClientRect(hwnd, &rect) || rect.right <= 0 || rect.bottom <= 0) {
+            candidate = nullptr;
+            stable_times = 0;
+            continue;
+        }
+
+        const std::pair<LONG, LONG> size { rect.right, rect.bottom };
+        if (hwnd != candidate || size != last_size) {
+            candidate = hwnd;
+            last_size = size;
+            stable_times = 0;
+            continue;
+        }
+        if (++stable_times >= StableTimesRequired) {
+            LogInfo << __FUNCTION__ << "| game window ready, hwnd:" << static_cast<void*>(hwnd)
+                    << "client size:" << size.first << "x" << size.second;
+            return hwnd;
+        }
+    }
+
+    LogError << __FUNCTION__ << "| timeout waiting for the game window";
+    return nullptr;
+}
+
+bool Win32Controller::reattach_window(HWND hwnd, const std::string& why)
+{
+    LogTraceFunction;
+    LogInfo << __FUNCTION__ << "| old hwnd:" << m_hwnd << "new hwnd:" << static_cast<void*>(hwnd) << "why:" << why;
+
+    // 旧窗口若仍被移出屏幕或透明处理，先结束追踪并还原
+    restore_window_position();
+    m_inited = false;
+
+    if (!create_unit(hwnd)) {
+        return false;
+    }
+    record_window_identity();
+
+    cv::Mat image;
+    if (!unit_screencap(image) || image.empty()) {
+        LogError << __FUNCTION__ << "| screencap failed after reattach";
+        return false;
+    }
+    if (const std::pair new_size { image.cols, image.rows }; new_size != m_screen_size) {
+        LogWarn << __FUNCTION__ << "| screen size changed from" << m_screen_size.first << "x" << m_screen_size.second
+                << "to" << new_size.first << "x" << new_size.second;
+        m_screen_size = new_size;
+    }
+    m_inited = true;
+
+    json::value info = json::object {
+        { "uuid", m_uuid },
+        { "what", "WindowReattached" },
+        { "why", why },
+        { "details",
+          json::object {
+              { "hwnd", reinterpret_cast<uintptr_t>(hwnd) },
+              { "width", m_screen_size.first },
+              { "height", m_screen_size.second },
+          } },
+    };
+    callback(AsstMsg::ConnectionInfo, info);
+    return true;
+}
+
+bool Win32Controller::recover_lost_window()
+{
+    LogTraceFunction;
+
+    // 窗口仍在说明截图失败另有原因，不做重新绑定
+    if (is_attached_window_alive()) {
+        return false;
+    }
+
+    LogWarn << __FUNCTION__ << "| game window is gone, hwnd:" << m_hwnd;
+    if (HWND hwnd = find_game_window(0); hwnd && reattach_window(hwnd, "WindowLost")) {
+        return true;
+    }
+
+    // 与 adb 重连失败一致：标记断开，界面据此停止任务，之后不再重复尝试
+    m_inited = false;
+    json::value info = json::object {
+        { "uuid", m_uuid },
+        { "what", "Disconnect" },
+        { "why", "Game window lost" },
+        { "details", json::object { { "hwnd", reinterpret_cast<uintptr_t>(m_hwnd) } } },
+    };
+    callback(AsstMsg::ConnectionInfo, info);
+    return false;
 }
 
 bool Win32Controller::prepare_window_for_input()
@@ -647,7 +1004,7 @@ bool Win32Controller::prepare_window_for_input()
 
 bool Win32Controller::unit_screencap(cv::Mat& image)
 {
-    auto* unit = static_cast<MaaFwControlUnitAPI*>(m_unit_handle);
+    auto unit = acquire_unit();
     if (!unit) {
         return false;
     }
@@ -656,7 +1013,7 @@ bool Win32Controller::unit_screencap(cv::Mat& image)
 
 bool Win32Controller::unit_click(int x, int y)
 {
-    auto* unit = static_cast<MaaFwControlUnitAPI*>(m_unit_handle);
+    auto unit = acquire_unit();
     if (!unit) {
         return false;
     }
@@ -665,7 +1022,7 @@ bool Win32Controller::unit_click(int x, int y)
 
 bool Win32Controller::unit_swipe(int x1, int y1, int x2, int y2, int duration)
 {
-    auto* unit = static_cast<MaaFwControlUnitAPI*>(m_unit_handle);
+    auto unit = acquire_unit();
     if (!unit) {
         return false;
     }
@@ -674,7 +1031,7 @@ bool Win32Controller::unit_swipe(int x1, int y1, int x2, int y2, int duration)
 
 bool Win32Controller::unit_touch_down(int contact, int x, int y, int pressure)
 {
-    auto* unit = static_cast<MaaFwControlUnitAPI*>(m_unit_handle);
+    auto unit = acquire_unit();
     if (!unit) {
         return false;
     }
@@ -683,7 +1040,7 @@ bool Win32Controller::unit_touch_down(int contact, int x, int y, int pressure)
 
 bool Win32Controller::unit_touch_move(int contact, int x, int y, int pressure)
 {
-    auto* unit = static_cast<MaaFwControlUnitAPI*>(m_unit_handle);
+    auto unit = acquire_unit();
     if (!unit) {
         return false;
     }
@@ -692,7 +1049,7 @@ bool Win32Controller::unit_touch_move(int contact, int x, int y, int pressure)
 
 bool Win32Controller::unit_touch_up(int contact)
 {
-    auto* unit = static_cast<MaaFwControlUnitAPI*>(m_unit_handle);
+    auto unit = acquire_unit();
     if (!unit) {
         return false;
     }
@@ -704,7 +1061,7 @@ bool Win32Controller::unit_touch_up(int contact)
 
 bool Win32Controller::unit_input_text(const std::string& text)
 {
-    auto* unit = static_cast<MaaFwControlUnitAPI*>(m_unit_handle);
+    auto unit = acquire_unit();
     if (!unit) {
         return false;
     }
@@ -713,7 +1070,7 @@ bool Win32Controller::unit_input_text(const std::string& text)
 
 bool Win32Controller::unit_key_down(int key)
 {
-    auto* unit = static_cast<MaaFwControlUnitAPI*>(m_unit_handle);
+    auto unit = acquire_unit();
     if (!unit) {
         return false;
     }
@@ -723,7 +1080,7 @@ bool Win32Controller::unit_key_down(int key)
 
 bool Win32Controller::unit_key_up(int key)
 {
-    auto* unit = static_cast<MaaFwControlUnitAPI*>(m_unit_handle);
+    auto unit = acquire_unit();
     if (!unit) {
         return false;
     }

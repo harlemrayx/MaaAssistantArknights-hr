@@ -43,6 +43,13 @@ bool StartGameTaskPlugin::_run()
         return ctrler()->start_game(m_client_type);
     }
 
+#ifdef _WIN32
+    // PC 端由控制器启动客户端并等待窗口就绪，没有 adb 管道数据可供判断
+    if (ctrler()->get_controller_type() == ControllerType::Win32) {
+        return ctrler()->start_game(m_client_type);
+    }
+#endif
+
     // check for android version, because it leads to different magic values
     // >8:  167: magic value needs to be >164 but <172 (as that's max)
     // <=8: 145: needs to be >85 but <153 (as that's max)

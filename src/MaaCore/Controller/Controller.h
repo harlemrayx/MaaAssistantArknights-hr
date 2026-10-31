@@ -117,6 +117,10 @@ private:
     void callback(AsstMsg msg, const json::value& details);
     void sync_params();
     bool resolve_swipe_with_pause(bool with_pause) const noexcept;
+#ifdef _WIN32
+    // PC 端重启游戏后会重新绑定新窗口，窗口尺寸变化时按新尺寸重建缩放代理
+    bool sync_win32_scale_proxy();
+#endif
 
     AsstCallback m_callback = nullptr;
 
@@ -131,6 +135,8 @@ private:
     std::shared_ptr<ControllerAPI> m_controller = nullptr;
 
     std::shared_ptr<ControlScaleProxy> m_scale_proxy = nullptr;
+    // 创建缩放代理时控制器的原始分辨率，仅 PC 端用于检测重新绑定窗口后的尺寸变化
+    std::pair<int, int> m_scale_proxy_res = { 0, 0 };
 
     std::string m_uuid;
 

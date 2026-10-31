@@ -36,6 +36,10 @@ UnhookWinEvent
 GetWindowLong
 SetWindowLong
 
+// PC client path
+OpenProcess
+QueryFullProcessImageName
+
 // Game audio mute
 GetWindowPlacement
 SetWindowPlacement
