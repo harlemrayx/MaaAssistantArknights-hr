@@ -837,7 +837,14 @@
         "template": "BlackFlow@Roguelike@LastReward.png"
     },
     "BlackFlow@Roguelike@LastReward-EnterPoint": {
+        "Doc": "确认后支援页过场未结束时会被再次匹配进入这里，此时页面随后切到招募组合，next 需能接上 RolesDefault / RecruitMain，否则只等 Confirm 直到超时。",
         "roi": [82, 145, 1116, 310],
+        "next": [
+            "BlackFlow@Roguelike@LastRewardConfirm",
+            "BlackFlow@Roguelike@RolesDefault",
+            "BlackFlow@Roguelike@RecruitMain",
+            "BlackFlow@Roguelike@AbandonConfirm#next"
+        ],
         "template": [
             "BlackFlow@Roguelike@LastReward.png",
             "BlackFlow@Roguelike@LastReward2.png",
