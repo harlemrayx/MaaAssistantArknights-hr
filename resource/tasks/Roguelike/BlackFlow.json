@@ -837,12 +837,14 @@
         "template": "BlackFlow@Roguelike@LastReward.png"
     },
     "BlackFlow@Roguelike@LastReward-EnterPoint": {
-        "Doc": "确认后支援页过场未结束时会被再次匹配进入这里，此时页面随后切到招募组合，next 需能接上 RolesDefault / RecruitMain，否则只等 Confirm 直到超时。",
+        "Doc": "确认后支援页过场未结束时会被再次匹配进入这里，此时页面随后切到招募组合，next 需能接上 RolesDefault / RecruitMain，否则只等 Confirm 直到超时。可选两次时，第一张确认后收藏品弹窗会晚到并盖住页面，需先关掉弹窗；关掉后卡片未选中则回到本任务重新选。",
         "roi": [82, 145, 1116, 310],
         "next": [
             "BlackFlow@Roguelike@LastRewardConfirm",
             "BlackFlow@Roguelike@RolesDefault",
             "BlackFlow@Roguelike@RecruitMain",
+            "BlackFlow@Roguelike@LastReward-EnterPoint@(BlackFlow@Roguelike@CloseCollection)",
+            "BlackFlow@Roguelike@LastReward-EnterPoint",
             "BlackFlow@Roguelike@AbandonConfirm#next"
         ],
         "template": [
