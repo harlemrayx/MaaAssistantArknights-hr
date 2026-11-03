@@ -1,4 +1,6 @@
 #pragma once
+#include <optional>
+
 #include "AbstractRoguelikeTaskPlugin.h"
 
 namespace asst
@@ -45,6 +47,7 @@ private:
     bool hijack_roles();
     bool hijack_core_char();
     std::vector<std::string> get_select_list() const;
+    std::optional<Rect> find_settled_text(const std::string& task_name, const std::string& text);
 
 private:
     RoguelikeStartSelect m_start_select; // 开局选择

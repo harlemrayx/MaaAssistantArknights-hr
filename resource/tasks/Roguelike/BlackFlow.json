@@ -57,7 +57,27 @@
             "BlackFlow@Roguelike@StageTraderLeaveConfirm*3",
             "BlackFlow@Roguelike@RecoverMap*3",
             "BlackFlow@Roguelike@RecoverMap-Exit*3",
-            "BlackFlow@Roguelike@RecoverMap-Continue*3"
+            "BlackFlow@Roguelike@RecoverMap-Continue*3",
+            "BlackFlow@Roguelike@AbandonConfirmRetry*3"
+        ],
+        "next": [
+            "BlackFlow@Roguelike@MissionFailedFlag2",
+            "BlackFlow@Roguelike@StartExplore",
+            "BlackFlow@Roguelike@StartExploreCD",
+            "BlackFlow@Roguelike@AbandonConfirmRetry"
+        ]
+    },
+    "BlackFlow@Roguelike@AbandonConfirmRetry": {
+        "Doc": "放弃确认框刚弹出时点 ✔ 偶尔不生效，确认框会一直留着；再点几次，不重复触发放弃后的重置。",
+        "baseTask": "BlackFlow@Roguelike@AbandonConfirm",
+        "template": "BlackFlow@Roguelike@AbandonConfirm.png",
+        "maxTimes": 3,
+        "reduceOtherTimes": [],
+        "next": [
+            "BlackFlow@Roguelike@MissionFailedFlag2",
+            "BlackFlow@Roguelike@StartExplore",
+            "BlackFlow@Roguelike@StartExploreCD",
+            "BlackFlow@Roguelike@AbandonConfirmRetry"
         ]
     },
     "BlackFlow@Roguelike@Begin": {
@@ -1745,7 +1765,10 @@
         "template": "Roguelike@StageTraderInvestConfirm.png",
         "next": [
             "BlackFlow@Roguelike@SeedPriority@Roguelike@StageTraderInvestSystemError",
-            "BlackFlow@Roguelike@SeedPriority@Roguelike@StageTraderInvestCancel"
+            "BlackFlow@Roguelike@SeedPriority@Roguelike@StageTraderInvestCancel",
+            "BlackFlow@Roguelike@SeedPriority@Roguelike@StageTraderInvestSystemLeave",
+            "BlackFlow@Roguelike@TraderRandomShopping",
+            "BlackFlow@Roguelike@StageTraderLeave"
         ],
         "reduceOtherTimes": ["BlackFlow@Roguelike@SeedPriority@Roguelike@StageTraderInvestSystemEnter*3"]
     },
@@ -1997,9 +2020,15 @@
         "reduceOtherTimes": ["BlackFlow@Roguelike@StageTraderInvestSystemEnter*3"]
     },
     "BlackFlow@Roguelike@StageTraderInvestConfirm": {
+        "Doc": "投资插件中途出错时投资框可能已经关掉、回到商店页面，此时直接接着离开商店。",
         "baseTask": "Roguelike@StageTraderInvestConfirm",
         "template": "Roguelike@StageTraderInvestConfirm.png",
-        "next": ["BlackFlow@Roguelike@StageTraderInvestSystemError", "BlackFlow@Roguelike@StageTraderInvestCancel"],
+        "next": [
+            "BlackFlow@Roguelike@StageTraderInvestSystemError",
+            "BlackFlow@Roguelike@StageTraderInvestCancel",
+            "BlackFlow@Roguelike@StageTraderInvestSystemLeave",
+            "BlackFlow@Roguelike@StageTraderLeave"
+        ],
         "reduceOtherTimes": ["BlackFlow@Roguelike@StageTraderInvestSystemEnter*3"]
     },
     "BlackFlow@Roguelike@StageTraderInvestSystem": {

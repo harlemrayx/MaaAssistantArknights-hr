@@ -1,5 +1,7 @@
 #include "RoguelikeCustomStartTaskPlugin.h"
 
+#include <cstdlib>
+
 #include "Config/GeneralConfig.h"
 #include "Config/Miscellaneous/BattleDataConfig.h"
 #include "Config/TaskData.h"
@@ -146,18 +148,13 @@ bool asst::RoguelikeCustomStartTaskPlugin::hijack_squad()
         if (need_exit()) {
             return false;
         }
-        auto image = ctrler()->get_image();
-        OCRer analyzer(image);
-        analyzer.set_task_info("RoguelikeCustom-HijackSquad");
-        analyzer.set_required({ squad });
-
-        if (!analyzer.analyze()) {
+        const auto rect = find_settled_text("RoguelikeCustom-HijackSquad", squad);
+        if (!rect) {
             ProcessTask(*this, { "Roguelike@SquadSlowlySwipeToTheRight" }).run();
             sleep(Task.get("RoguelikeCustom-HijackSquad")->post_delay);
             continue;
         }
-        const auto& rect = analyzer.get_result().front().rect;
-        ctrler()->click(rect);
+        ctrler()->click(*rect);
 
         m_config->set_squad(std::move(squad));
         return true;
@@ -206,14 +203,8 @@ bool asst::RoguelikeCustomStartTaskPlugin::hijack_roles()
             return false;
         }
 
-        auto image = ctrler()->get_image();
-        OCRer analyzer(image);
-        analyzer.set_task_info("RoguelikeCustom-HijackRoles");
-        analyzer.set_required({ required_role });
-
-        if (analyzer.analyze()) {
-            const auto& rect = analyzer.get_result().front().rect;
-            ctrler()->click(rect);
+        if (const auto rect = find_settled_text("RoguelikeCustom-HijackRoles", required_role)) {
+            ctrler()->click(*rect);
             return true;
         }
 
@@ -223,6 +214,37 @@ bool asst::RoguelikeCustomStartTaskPlugin::hijack_roles()
 
     ProcessTask(*this, { "SwipeToTheLeft" }).run();
     return false;
+}
+
+std::optional<asst::Rect>
+    asst::RoguelikeCustomStartTaskPlugin::find_settled_text(const std::string& task_name, const std::string& text)
+{
+    // 滑动后列表可能还在惯性滚动（PC 端尤其明显），滚动中点击只会让列表停下而不会选中，
+    // 所以连续两帧位置一致才算停稳
+    constexpr int MaxShift = 5;
+    constexpr int MaxFrames = 10;
+    constexpr unsigned FrameInterval = 200;
+
+    std::optional<Rect> last;
+    for (int i = 0; i != MaxFrames; ++i) {
+        if (need_exit()) {
+            return std::nullopt;
+        }
+        OCRer analyzer(ctrler()->get_image());
+        analyzer.set_task_info(task_name);
+        analyzer.set_required({ text });
+        if (!analyzer.analyze()) {
+            return std::nullopt;
+        }
+        const auto& rect = analyzer.get_result().front().rect;
+        if (last && std::abs(rect.x - last->x) <= MaxShift) {
+            return rect;
+        }
+        last = rect;
+        sleep(FrameInterval);
+    }
+    LogWarn << __FUNCTION__ << "list still moving, click last position" << text;
+    return last;
 }
 
 bool asst::RoguelikeCustomStartTaskPlugin::hijack_core_char()
